@@ -1,22 +1,17 @@
 package main
 
-import "fmt"
-
 //
-// Returns unique items in a slice based on
-// their .String() representation.
+// Returns unique items in a slice
 //
-func Unique[S fmt.Stringer](slice []S) []S {
-	// create a map with all the values as key
-	uniqMap := make(map[string]S)
-	for _, v := range slice {
-		uniqMap[v.String()] = v
+func Unique(s []any) []any {
+	// create a map with all the values as keys
+	seen := make(map[any]bool)
+	unique := make([]any, 0, len(s))
+	for _, v := range s {
+		if !seen[v] {
+			seen[v] = true
+			unique = append(unique, v)
+		}
 	}
-
-	// turn the map keys into a slice
-	uniqSlice := make([]S, 0, len(uniqMap))
-	for v := range uniqMap {
-		uniqSlice = append(uniqSlice, uniqMap[v])
-	}
-	return uniqSlice
+	return unique
 }

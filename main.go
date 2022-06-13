@@ -4,7 +4,7 @@ func main() {
 	recv := make(chan []byte)
 	defer close(recv)
 	dk := DraftKings{}
-	_, err := dk.GetStreamUrls()
+	_, err := dk.GetStreamSubscriptions()
 	if err != nil {
 		panic(err)
 	}
