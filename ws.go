@@ -2,13 +2,14 @@ package main
 
 import (
 	"flag"
-	"log"
-	"net/url"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog/log"
 )
 
 type Frame struct {
@@ -22,25 +23,27 @@ type Ping struct {
 }
 
 type Subscription struct {
-	URL     url.URL
+	Request http.Request
 	Ping    Ping
 	Receive chan []byte
 	Init    func(send chan []byte)
+	Wait    *sync.WaitGroup
 }
 
 func (s Subscription) run() {
-	flag.Parse()
-	log.SetFlags(0)
+	defer s.Wait.Done()
 
+	flag.Parse()
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
 
-	log.Printf("connecting to %s", s.URL.String())
-
-	c, _, err := websocket.DefaultDialer.Dial(s.URL.String(), nil)
+	url := s.Request.URL.String()
+	c, _, err := websocket.DefaultDialer.Dial(url, s.Request.Header)
 	if err != nil {
-		log.Fatal("dial:", err)
+		log.Fatal().Err(err).Msg("Dialing")
+		return
 	}
+	log.Info().Str("url", url).Msg("Dialed")
 	defer c.Close()
 
 	done := make(chan bool)
@@ -52,9 +55,10 @@ func (s Subscription) run() {
 		for {
 			_, message, err := c.ReadMessage()
 			if err != nil {
-				log.Println("read:", err)
+				log.Error().Err(err).Msg("Receiving")
 				break
 			}
+			last_received_at = time.Now()
 			s.Receive <- message
 		}
 	}()
@@ -68,9 +72,11 @@ func (s Subscription) run() {
 			msg := <-send
 			err := c.WriteMessage(websocket.TextMessage, msg)
 			if err != nil {
-				log.Println("write:", err)
+				log.Error().RawJSON("msg", msg).Err(err).Msg("Sending")
 				return
 			}
+			log.Info().RawJSON("msg", msg).Msg("Sent")
+
 		}
 	}()
 
@@ -82,9 +88,6 @@ func (s Subscription) run() {
 
 	for {
 		select {
-		case recv := <-s.Receive:
-			log.Printf("recv: %s", recv)
-			last_received_at = time.Now()
 		case <-done:
 			close(done)
 			return
@@ -95,7 +98,7 @@ func (s Subscription) run() {
 				send <- []byte(s.Ping.Message())
 			}
 		case <-interrupt:
-			log.Println("interrupt")
+			log.Info().Msg("Interrupted")
 
 			// Cleanly close the connection by sending a close message and then
 			// waiting (with timeout) for the server to close the connection.
@@ -104,7 +107,7 @@ func (s Subscription) run() {
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			)
 			if err != nil {
-				log.Println("write close:", err)
+				log.Error().Err(err).Msg("Closing writer")
 				return
 			}
 			select {

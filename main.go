@@ -1,30 +1,32 @@
 package main
 
+import (
+	"os"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+)
+
 func main() {
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+
 	recv := make(chan []byte)
-	defer close(recv)
+
 	dk := DraftKings{}
-	_, err := dk.GetStreamSubscriptions()
+	wg, err := dk.SubscribeToStreams(recv)
 	if err != nil {
-		panic(err)
+		log.Error().Err(err)
 	}
 
-	// sub := Subscription{
-	// 	URL: url.URL{
-	// 		Scheme: "ws", Host: "ws-draftkingseu.pusher.com",
-	// 		Path:     "app/490c3809b82ef97880f2",
-	// 		RawQuery: "protocol=7&client=js&version=4.2.2&flash=false",
-	// 	},
-	// 	Ping: Ping{
-	// 		Interval: time.Second * 6,
-	// 		Message: func() string {
-	// 			return "{\"event\": \"pusher:ping\", \"data\": \"{}\"}"
-	// 		},
-	// 	},
-	// 	Receive: recv,
-	// 	Init: func(send chan []byte) {
-	// 		send <- []byte("{\"event\":\"pusher:subscribe\",\"data\":{\"channel\":\"nj_ent-eventgroup-88670847\"}}")
-	// 	},
-	// }
-	// sub.run()
+	// Close the recieving channel when all Subscriptions
+	// have finished
+	go func() {
+		wg.Wait()
+		close(recv)
+	}()
+
+	for r := range recv {
+		log.Info().RawJSON("msg", r).Msg("Recieved")
+	}
+	log.Info().Msg("Closed all Subscriptions and exited")
 }
