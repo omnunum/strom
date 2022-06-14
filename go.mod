@@ -1,4 +1,4 @@
-module feedme
+module main
 
 go 1.18
 
