@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/gorilla/websocket v1.5.0
-	github.com/ohler55/ojg v1.14.2
+	github.com/ohler55/ojg v1.14.3
 	github.com/rs/zerolog v1.27.0
 	github.com/wux1an/fake-useragent v1.1.0
 )
