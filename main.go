@@ -13,6 +13,7 @@ func main() {
 	recv := make(chan []byte)
 
 	dk := DraftKings{}
+	_ = dk.BuildBook()
 	wg, err := dk.SubscribeToStreams(recv)
 	if err != nil {
 		log.Error().Err(err)

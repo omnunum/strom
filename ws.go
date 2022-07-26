@@ -47,9 +47,9 @@ func (s Subscription) run() {
 	defer c.Close()
 
 	done := make(chan bool)
-
 	var last_received_at time.Time
-
+	// Read message from the connection and pass it to the
+	// subscription's receive chan
 	go func() {
 		defer func() { done <- true }()
 		for {
@@ -65,7 +65,7 @@ func (s Subscription) run() {
 
 	send := make(chan []byte)
 	defer close(send)
-
+	// Read message from subscriber and write it to the connection
 	go func() {
 		defer func() { done <- true }()
 		for {
@@ -76,16 +76,17 @@ func (s Subscription) run() {
 				return
 			}
 			log.Info().RawJSON("msg", msg).Msg("Sent")
-
 		}
 	}()
 
-	// This is usually where we send the subscription message
+	// The subscribers Init function is where we generate the
+	// subscription message
 	s.Init(send)
 
 	ticker := time.NewTicker(time.Second * 1)
 	defer ticker.Stop()
 
+	// Main event loop
 	for {
 		select {
 		case <-done:
@@ -99,7 +100,6 @@ func (s Subscription) run() {
 			}
 		case <-interrupt:
 			log.Info().Msg("Interrupted")
-
 			// Cleanly close the connection by sending a close message and then
 			// waiting (with timeout) for the server to close the connection.
 			err := c.WriteMessage(
