@@ -24,9 +24,9 @@ type Book struct {
 }
 
 type Sport struct {
-	Name       string              `json:"name"`
-	ID         json.Number         `json:"id"`
-	Categories map[string]Category `json:"categories"`
+	Name       string               `json:"name"`
+	ID         json.Number          `json:"id"`
+	Categories map[string]*Category `json:"categories"`
 }
 
 type Category struct {
@@ -44,7 +44,7 @@ func (b Book) GetEventSubscriptions() []string {
 	subs := make([]string, 0)
 	for _, sport := range b.Sports {
 		for _, category := range sport.Categories {
-			format := `{"event":"pusher:subscribe","data":{"channel":"nj_ent-eventgroup-%s"}}`
+			format := `{"event":"pusher:subscribe","data":{"channel":"nj_ent-eventgroupv2-%s"}}`
 			subs = append(subs, fmt.Sprintf(format, category.ID))
 		}
 	}
@@ -196,7 +196,6 @@ func (dk *DraftKings) BuildBook() error {
 		data = append(data, '}')
 		return string(data)
 	})
-
 	frames := []CrawlFrame{{
 		Getter: "featuredDisplayGroups.#.displayGroupId",
 		NextPathFormatter: func(id gjson.Result) string {
@@ -207,14 +206,29 @@ func (dk *DraftKings) BuildBook() error {
 		NextPathFormatter: func(id gjson.Result) string {
 			return fmt.Sprintf("featured/subcategories/%v/live", id)
 		},
+		//TODO: make sure we're getting rid of duplicate `featuredSubcategories` by only selecting those with events, and then lookup data on those events to populate the book
+	}, {
+		Getter: `[[	
+			featuredDisplayGroups.#(featuredSubcategories.#>0).displayGroupId,
+			featuredDisplayGroups.#.featuredSubcategories.#(featuredEventGroupSubcategories.#>0).subcategoryId|@flatten.0,
+			featuredDisplayGroups.#.featuredSubcategories.#.featuredEventGroupSubcategories.0.eventGroupId|@flatten.0
+		]]`,
+		NextPathFormatter: func(ids gjson.Result) string {
+			idArray := ids.Array()
+			return fmt.Sprintf(
+				"featured/displaygroups/%v/subcategory/%v/eventgroup/%v/live",
+				idArray[0], idArray[1], idArray[2],
+			)
+		},
+		//TODO: make sure we're getting rid of duplicate `featuredSubcategories` by only selecting those with events, and then lookup data on those events to populate the book
 	}, {
 		Getter: fmt.Sprintf(`
 			{
 				"name":%[1]s.name,
 				"id":%[1]s.displayGroupId,
 				"categories":{
-					"name":%[1]s.featuredSubcategories.#.subcategoryName,
-					"id":%[1]s.featuredSubcategories.#.subcategoryId,
+					"name":%[1]s.%[2]s.subcategoryName,
+					"id":%[1]s.%[2]s.subcategoryId,
 				}|@group|@objectify:name
 			}`,
 			// The responses to this api are odd in that they contain
@@ -222,7 +236,7 @@ func (dk *DraftKings) BuildBook() error {
 			// even if they don't contain any events in our queried subcategory
 			// so we filter them out by only selecting groups with subcategories.
 			// The bare # gives us the length of the array if it exists at all
-			"featuredDisplayGroups.#(featuredSubcategories.#>0)",
+			"featuredDisplayGroup", "featuredSubcategories.#(featuredEventGroupSubcategories.#>0)#",
 		),
 	},
 	}
