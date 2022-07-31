@@ -3,10 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sync"
 	"time"
 
@@ -15,9 +13,6 @@ import (
 	"github.com/tidwall/gjson"
 	ua "github.com/wux1an/fake-useragent"
 )
-
-// More efficient to precompile this once upfront
-var strip = regexp.MustCompile(`\s`)
 
 type Book struct {
 	Sports map[string]*Sport `json:"sports"`
@@ -52,12 +47,12 @@ func (b Book) GetEventSubscriptions() []string {
 }
 
 type DraftKings struct {
-	Client http.Client
-	Book   Book
+	Crawler Crawler
+	Book    Book
 }
 
-func makeAPIRequest(path string) http.Request {
-	return http.Request{
+func makeAPIRequest(path string) *http.Request {
+	return &http.Request{
 		URL: &url.URL{
 			Scheme:   "https",
 			Host:     "sportsbook.draftkings.com",
@@ -70,157 +65,58 @@ func makeAPIRequest(path string) http.Request {
 	}
 }
 
-func (dk DraftKings) GetAPIResponse(path string) ([]byte, error) {
-	req := makeAPIRequest(path)
-	res, err := dk.Client.Do(&req)
-	urlLog := log.With().Str("path", req.URL.String()).Logger()
-
-	if err != nil {
-		urlLog.Error().Err(err).Msg("Requesting API Response")
-		return nil, err
-	}
-	urlLog.Info().Msg("Requested API Response")
-
-	defer res.Body.Close()
-
-	if body, err := io.ReadAll(res.Body); err != nil {
-		urlLog.Error().Err(err).Msg("Reading API Response")
-		return nil, err
-	} else {
-		urlLog.Info().Msg("Read API Response")
-		urlLog.Debug().RawJSON("response", body).Msg("Read API Response")
-		return body, nil
-	}
-}
-
-type CrawlFrame struct {
-	// Passes response through this function in case we need to process
-	// it prior to calling the crawling Getter.  Can also be used for
-	// caching/outputting the raw response.
-	ResponsePreprocessor func(content []byte) ([]byte, error)
-	//JSON Path Expression for searching for records to crawl
-	Getter string
-	// Function that is called on each item found by the Getter
-	ItemProcessor func(item gjson.Result) (gjson.Result, error)
-	// Turns the item into an API path that can be called for the
-	// next Frame to process it's results
-	NextPathFormatter func(item gjson.Result) string
-}
-
-func (dk DraftKings) Crawl(
-	frames []CrawlFrame,
-	startPath string,
-	results chan gjson.Result,
-) *sync.WaitGroup {
-	// We need to use a wait group since the number of urls
-	// to be scraped is not known until we reach the end
-	var wg sync.WaitGroup
-	// Define closure first so we can recurse into itself
-	var crawl func(int, string)
-
-	crawl = func(step int, path string) {
-		defer wg.Done()
-
-		frame := frames[step]
-		pathLog := log.With().Str("path", path).Logger()
-		body, err := dk.GetAPIResponse(path)
-		// Preprocess data in place
-		if frame.ResponsePreprocessor != nil {
-			body, err = frame.ResponsePreprocessor(body)
-			if err != nil {
-				pathLog.Error().Err(err).Msg("Preprocessing API response")
-			}
-			pathLog.Debug().Msg("Preprocessed API response")
-		}
-		// This allows us to have whitespace in the path
-		// when specifying, without breaking GJSON
-		getterStripped := strip.ReplaceAllString(frame.Getter, "")
-		// Get the item(s) located at the JSON Path
-		found := gjson.GetBytes(body, getterStripped)
-		for _, v := range found.Array() {
-			// In case we want to transform the item before returning
-			// as result or crawling any further
-			if frame.ItemProcessor != nil {
-				v, err = frame.ItemProcessor(v)
-				if err != nil {
-					pathLog.Error().Err(err).Str("item", v.String()).Msg("Processing item")
-				}
-			}
-			// If there is a further step (frame) in the crawling process
-			// then crawl the next path
-			if step < len(frames)-1 {
-				wg.Add(1)
-				go crawl(step+1, frame.NextPathFormatter(v))
-				// Otherwise we've hit the end of the line and want
-				// to send the item to the results channel to be collected
-			} else {
-				results <- v
-			}
-		}
-	}
-	wg.Add(1)
-	go crawl(0, startPath)
-	return &wg
-}
-
 func (dk *DraftKings) BuildBook() error {
 	if dk.Book.Sports == nil {
 		dk.Book.Sports = make(map[string]*Sport)
 	}
-	// Converts an array of objects into an object of objects
-	// where the specified arg is the key used to map the inner
-	// objects as values of the outer object
-	// [{"name": "john", "id":0}, {"name": "mike", "id": 1}]|@objectify:name
-	// {"john": {"name": "john", "id":0}, "mike":{"name": "mike", "id": 1}}
-	gjson.AddModifier("objectify", func(json, keyPath string) string {
-		res := gjson.Parse(json)
-		if !res.IsArray() {
-			return ""
-		}
-		data := []byte{'{'}
-		var key string
-		res.ForEach(func(_, value gjson.Result) bool {
-			if !value.IsObject() {
-				return true
-			}
-			if keyPath == "" {
-				key = value.Get("@values.0").Raw
-			} else {
-				key = value.Get(keyPath).Raw
-			}
-			data = append(data, (key + ":" + value.Raw + ",")...)
-			return true
-		})
-		// Reslice to remove last byte containing trailing comma
-		data = data[:len(data)-1]
-		data = append(data, '}')
-		return string(data)
-	})
+
 	frames := []CrawlFrame{{
 		Getter: "featuredDisplayGroups.#.displayGroupId",
-		NextPathFormatter: func(id gjson.Result) string {
-			return fmt.Sprintf("featured/displaygroups/%v/live", id)
+		NextReqFormatter: func(id gjson.Result) (reqs []*http.Request, err error) {
+			path := fmt.Sprintf("featured/displaygroups/%v/live", id)
+			return append(reqs, makeAPIRequest(path)), nil
 		},
-	}, {
-		Getter: "featuredDisplayGroup.featuredSubcategories.#.subcategoryId",
-		NextPathFormatter: func(id gjson.Result) string {
-			return fmt.Sprintf("featured/subcategories/%v/live", id)
-		},
-		//TODO: make sure we're getting rid of duplicate `featuredSubcategories` by only selecting those with events, and then lookup data on those events to populate the book
 	}, {
 		Getter: `[[	
-			featuredDisplayGroups.#(featuredSubcategories.#>0).displayGroupId,
-			featuredDisplayGroups.#.featuredSubcategories.#(featuredEventGroupSubcategories.#>0).subcategoryId|@flatten.0,
-			featuredDisplayGroups.#.featuredSubcategories.#.featuredEventGroupSubcategories.0.eventGroupId|@flatten.0
+			featuredDisplayGroup.displayGroupId,
+			featuredDisplayGroup.featuredSubcategories.#.subcategoryId
 		]]`,
-		NextPathFormatter: func(ids gjson.Result) string {
+		NextReqFormatter: func(ids gjson.Result) (reqs []*http.Request, err error) {
 			idArray := ids.Array()
-			return fmt.Sprintf(
+			groupId, subcategoryIds := idArray[0], idArray[1]
+			for _, sub := range subcategoryIds.Array() {
+				path := fmt.Sprintf(
+					"featured/displaygroups/%v/subcategory/%v/live",
+					groupId, sub.String(),
+				)
+				reqs = append(reqs, makeAPIRequest(path))
+			}
+			return reqs, nil
+		},
+	}, {
+		Getter: fmt.Sprintf(
+			`[[	
+				featuredDisplayGroup.displayGroupId,
+				%[1]s.subcategoryId,
+				%[1]s.featuredEventGroupSubcategories.0.eventGroupId
+			]]`,
+			// Fetch all subcategories that have at least one event group.
+			// In practice this should only be a single element, as all other
+			// subcategories not specified in the request should not return
+			// any event groups and will be missing the featuredEventGroupSubcategories key
+			"featuredDisplayGroup.featuredSubcategories.#(featuredEventGroupSubcategories.#>0)",
+		),
+		NextReqFormatter: func(ids gjson.Result) (reqs []*http.Request, err error) {
+			idArray := ids.Array()
+			if len(idArray) < 3 {
+				return nil, fmt.Errorf("response had fewer than 3 elements")
+			}
+			path := fmt.Sprintf(
 				"featured/displaygroups/%v/subcategory/%v/eventgroup/%v/live",
 				idArray[0], idArray[1], idArray[2],
 			)
+			return append(reqs, makeAPIRequest(path)), nil
 		},
-		//TODO: make sure we're getting rid of duplicate `featuredSubcategories` by only selecting those with events, and then lookup data on those events to populate the book
 	}, {
 		Getter: fmt.Sprintf(`
 			{
@@ -241,7 +137,7 @@ func (dk *DraftKings) BuildBook() error {
 	},
 	}
 	results := make(chan gjson.Result)
-	wg := dk.Crawl(frames, "featured/live", results)
+	wg := dk.Crawler.Crawl(frames, makeAPIRequest("featured/live"), results)
 
 	// close the results channel when we've finished crawling
 	go func() {
